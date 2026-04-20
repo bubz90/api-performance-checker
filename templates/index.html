@@ -197,6 +197,9 @@
     .he-meta { color: #64748b; font-size: 0.75rem; white-space: nowrap; }
     .he-stats { display: flex; gap: 10px; margin-top: 4px; color: #94a3b8; font-size: 0.75rem; }
     .he-avg { color: #a78bfa; font-weight: 700; }
+    .latency-trend-up { color: #f87171; font-weight: 700; }
+    .latency-trend-down { color: #34d399; font-weight: 700; }
+    .latency-trend-flat { color: #94a3b8; font-weight: 700; }
 
     /* Chart */
     #chart-section { margin-top: 24px; }
@@ -300,6 +303,7 @@
   <div>
     <div class="card">
       <h2>Execution History</h2>
+      <div id="history-filter-indicator" style="color:#64748b;font-size:0.78rem;margin-bottom:10px;display:none"></div>
       <div id="history-section">
         <div style="color:#475569;font-size:0.85rem">No history yet.</div>
       </div>
@@ -316,9 +320,17 @@
 
 <script>
   /* ── State ── */
-  let intervalTimer = null;
+  let intervalDelayTimer = null;
   let intervalRunning = false;
+  let intervalRemaining = 0;
+  let intervalTotal = 0;
+  let intervalDurations = [];
+  let intervalSeconds = 3;
+  let activeRequestCount = 0;
+  let stopRequested = false;
+  const activeControllers = new Set();
   let historyData = [];
+  let historyDebounceTimer = null;
   let selectedEntryId = null;
   let currentEntryId = null;
   let perfChart = null;
@@ -327,6 +339,16 @@
   window.addEventListener('DOMContentLoaded', () => {
     loadLastExecution();
     fetchHistory();
+
+    const urlInput = document.getElementById('url');
+    urlInput.addEventListener('input', () => {
+      if (historyDebounceTimer) clearTimeout(historyDebounceTimer);
+      historyDebounceTimer = setTimeout(() => {
+        selectedEntryId = null;
+        currentEntryId = null;
+        fetchHistory();
+      }, 300);
+    });
   });
 
   function loadLastExecution() {
@@ -352,6 +374,10 @@
     };
   }
 
+  function getCurrentUrlFilter() {
+    return document.getElementById('url').value.trim();
+  }
+
   /* ── Execution ── */
   async function runOnce() {
     await execute(getFormData(1));
@@ -362,49 +388,122 @@
     await execute(getFormData(n));
   }
 
-  function startInterval() {
+  async function startInterval() {
     if (intervalRunning) return;
+    const n = parseInt(document.getElementById('seq-count').value) || 1;
     const secs = parseFloat(document.getElementById('interval-secs').value) || 3;
+
+    if (n < 1) {
+      document.getElementById('error-msg').textContent = '⚠ Repeat count must be at least 1';
+      return;
+    }
+
+    stopRequested = false;
     intervalRunning = true;
+    intervalRemaining = n;
+    intervalTotal = n;
+    intervalDurations = [];
+    intervalSeconds = secs;
     document.getElementById('btn-int').style.display = 'none';
     document.getElementById('btn-stop').style.display = '';
-    execute(getFormData(1));
-    intervalTimer = setInterval(() => execute(getFormData(1)), secs * 1000);
+    syncControls();
+
+    while (intervalRunning && intervalRemaining > 0) {
+      await execute(getFormData(1), { suppressStopMessage: true });
+      intervalRemaining -= 1;
+      if (!intervalRunning || intervalRemaining <= 0) break;
+      await waitForNextTick(intervalSeconds * 1000);
+    }
+
+    if (!stopRequested) {
+      stopInterval(false);
+    }
   }
 
-  function stopInterval() {
-    clearInterval(intervalTimer);
+  function stopInterval(showMessage = true) {
+    stopRequested = true;
+    if (intervalDelayTimer) {
+      clearTimeout(intervalDelayTimer);
+      intervalDelayTimer = null;
+    }
     intervalRunning = false;
+    intervalRemaining = 0;
+    intervalTotal = 0;
+
+    // Hard stop all in-flight API calls.
+    for (const controller of activeControllers) {
+      controller.abort();
+    }
+    activeControllers.clear();
+
     document.getElementById('btn-int').style.display = '';
     document.getElementById('btn-stop').style.display = 'none';
+    if (showMessage) {
+      document.getElementById('error-msg').textContent = 'Execution stopped.';
+    }
+    syncControls();
   }
 
-  function setLoading(on) {
-    document.getElementById('results-spinner').style.display = on ? '' : 'none';
-    ['btn-once','btn-seq','btn-int'].forEach(id => {
-      document.getElementById(id).disabled = on && !intervalRunning;
+  function waitForNextTick(ms) {
+    return new Promise(resolve => {
+      intervalDelayTimer = setTimeout(() => {
+        intervalDelayTimer = null;
+        resolve();
+      }, ms);
     });
   }
 
-  async function execute(payload) {
+  function syncControls() {
+    document.getElementById('results-spinner').style.display = activeRequestCount > 0 ? '' : 'none';
+    const disabled = activeRequestCount > 0 || intervalRunning;
+    ['btn-once','btn-seq','btn-int'].forEach(id => {
+      document.getElementById(id).disabled = disabled;
+    });
+
+    const btnInt = document.getElementById('btn-int');
+    const btnStop = document.getElementById('btn-stop');
+    btnInt.style.display = intervalRunning ? 'none' : '';
+    btnStop.style.display = (intervalRunning || activeRequestCount > 0) ? '' : 'none';
+  }
+
+  async function execute(payload, options = {}) {
     document.getElementById('error-msg').textContent = '';
     document.getElementById('results-section').style.display = '';
-    setLoading(true);
+    const controller = new AbortController();
+    activeControllers.add(controller);
+    activeRequestCount += 1;
+    syncControls();
+
     try {
       const resp = await fetch('/execute', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
+        signal: controller.signal,
         body: JSON.stringify(payload),
       });
       const entry = await resp.json();
       if (!resp.ok) { throw new Error(entry.error || 'Request failed'); }
+
+      if (intervalRunning) {
+        const d = getLatestDuration(entry);
+        if (d !== null) intervalDurations.push(d);
+      }
+
       currentEntryId = entry.id;
       renderResults(entry);
       await fetchHistory();
     } catch (e) {
+      if (e.name === 'AbortError') {
+        if (!options.suppressStopMessage) {
+          document.getElementById('error-msg').textContent = 'Execution stopped.';
+        }
+        return;
+      }
       document.getElementById('error-msg').textContent = '⚠ ' + e.message;
     } finally {
-      setLoading(false);
+      activeControllers.delete(controller);
+      activeRequestCount = Math.max(0, activeRequestCount - 1);
+      syncControls();
     }
   }
 
@@ -412,12 +511,34 @@
   function renderResults(entry) {
     const summary = document.getElementById('result-summary');
     const items   = document.getElementById('result-items');
+    const durations = intervalRunning ? intervalDurations : getDurations(entry);
+    const latestMs = durations.length ? durations[durations.length - 1] : null;
+    const intervalCompleted = intervalTotal > 0
+      ? Math.max(0, intervalTotal - intervalRemaining + 1)
+      : 0;
+    const callsLabel = intervalRunning && intervalTotal > 0
+      ? `${intervalCompleted}/${intervalTotal}`
+      : `${entry.count}`;
+
+    const shouldShowStats = intervalRunning || (entry.count || 0) > 1;
+    const avgMs = durations.length
+      ? (durations.reduce((a, b) => a + b, 0) / durations.length).toFixed(2)
+      : null;
+    const minMs = durations.length ? Math.min(...durations) : null;
+    const maxMs = durations.length ? Math.max(...durations) : null;
+
+    const statsHtml = shouldShowStats
+      ? `
+      <div class="stat-pill">Avg <span>${avgMs === null ? '-' : avgMs + ' ms'}</span></div>
+      <div class="stat-pill">Min <span>${minMs === null ? '-' : minMs + ' ms'}</span></div>
+      <div class="stat-pill">Max <span>${maxMs === null ? '-' : maxMs + ' ms'}</span></div>
+    `
+      : '';
 
     summary.innerHTML = `
-      <div class="stat-pill">Calls <span>${entry.count}</span></div>
-      <div class="stat-pill">Avg <span>${entry.avg_ms} ms</span></div>
-      <div class="stat-pill">Min <span>${entry.min_ms} ms</span></div>
-      <div class="stat-pill">Max <span>${entry.max_ms} ms</span></div>
+      <div class="stat-pill">Calls <span>${callsLabel}</span></div>
+      <div class="stat-pill">Latest <span>${latestMs === null ? '-' : latestMs + ' ms'}</span></div>
+      ${statsHtml}
     `;
 
     items.innerHTML = '';
@@ -455,8 +576,18 @@
 
   /* ── History ── */
   async function fetchHistory() {
-    const resp = await fetch('/history');
+    const urlFilter = getCurrentUrlFilter();
+    const qs = urlFilter ? `?url=${encodeURIComponent(urlFilter)}` : '';
+    const resp = await fetch('/history' + qs);
     historyData = await resp.json();
+
+    if (selectedEntryId && !historyData.some(e => e.id === selectedEntryId)) {
+      selectedEntryId = null;
+    }
+    if (currentEntryId && !historyData.some(e => e.id === currentEntryId)) {
+      currentEntryId = null;
+    }
+
     renderHistory();
     renderChart();
     if (selectedEntryId) renderComparison();
@@ -464,16 +595,61 @@
 
   function renderHistory() {
     const el = document.getElementById('history-section');
+    const indicator = document.getElementById('history-filter-indicator');
+    const urlFilter = getCurrentUrlFilter();
+    if (urlFilter) {
+      indicator.style.display = '';
+      indicator.textContent = `Filtered by URL: ${urlFilter}`;
+    } else {
+      indicator.style.display = 'none';
+      indicator.textContent = '';
+    }
+
     if (!historyData.length) {
-      el.innerHTML = '<div style="color:#475569;font-size:0.85rem">No history yet.</div>';
+      el.innerHTML = urlFilter
+        ? '<div style="color:#475569;font-size:0.85rem">No history for this URL yet.</div>'
+        : '<div style="color:#475569;font-size:0.85rem">No history yet.</div>';
       return;
     }
+
+    const trendByEntryId = {};
+    for (let i = 0; i < historyData.length; i += 1) {
+      const cur = historyData[i];
+      const curLatest = getLatestDuration(cur);
+      if (i === 0 || curLatest === null) {
+        trendByEntryId[cur.id] = null;
+        continue;
+      }
+
+      const prev = historyData[i - 1];
+      const prevLatest = getLatestDuration(prev);
+      if (prevLatest === null) {
+        trendByEntryId[cur.id] = null;
+      } else if (curLatest > prevLatest) {
+        trendByEntryId[cur.id] = 'up';
+      } else if (curLatest < prevLatest) {
+        trendByEntryId[cur.id] = 'down';
+      } else {
+        trendByEntryId[cur.id] = 'flat';
+      }
+    }
+
     el.innerHTML = '';
     [...historyData].reverse().forEach(entry => {
       const div = document.createElement('div');
       div.className = 'history-entry' + (entry.id === selectedEntryId ? ' active' : '');
       div.dataset.id = entry.id;
       const ts = new Date(entry.timestamp).toLocaleString();
+      const durations = getDurations(entry);
+      const latestMs = durations.length ? durations[durations.length - 1] : null;
+      const trend = trendByEntryId[entry.id];
+      const trendHtml = trend === 'up'
+        ? '<span class="latency-trend-up">↑ slower</span>'
+        : trend === 'down'
+          ? '<span class="latency-trend-down">↓ faster</span>'
+          : trend === 'flat'
+            ? '<span class="latency-trend-flat">→ same</span>'
+            : '';
       div.innerHTML = `
         <div class="he-top">
           <span class="he-url">${escHtml(entry.url)}</span>
@@ -481,10 +657,9 @@
         </div>
         <div class="he-stats">
           <span>${ts}</span>
-          <span>n=${entry.count}</span>
-          <span class="he-avg">avg ${entry.avg_ms} ms</span>
-          <span>min ${entry.min_ms} ms</span>
-          <span>max ${entry.max_ms} ms</span>
+          <span>n=${durations.length || entry.count || 0}</span>
+          <span class="he-avg">latest ${latestMs === null ? '-' : latestMs + ' ms'}</span>
+          ${trendHtml}
         </div>
       `;
       div.addEventListener('click', () => selectEntry(entry.id));
@@ -524,7 +699,21 @@
       return;
     }
 
-    const diff = (cur.avg_ms - sel.avg_ms).toFixed(2);
+    const selLatest = getLatestDuration(sel);
+    const curLatest = getLatestDuration(cur);
+    if (selLatest === null || curLatest === null) {
+      content.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          ${renderEntryDetail(sel, 'Selected (baseline)')}
+          ${renderEntryDetail(cur, 'Current')}
+        </div>
+        <div style="margin-top:14px;padding:12px;background:#0f172a;border-radius:8px;text-align:center;color:#94a3b8">
+          Latest change: not available
+        </div>
+      `;
+      return;
+    }
+    const diff = (curLatest - selLatest).toFixed(2);
     const sign = diff > 0 ? '+' : '';
     const color = diff > 0 ? '#f87171' : '#34d399';
     content.innerHTML = `
@@ -533,21 +722,30 @@
         ${renderEntryDetail(cur, 'Current')}
       </div>
       <div style="margin-top:14px;padding:12px;background:#0f172a;border-radius:8px;text-align:center">
-        Avg change: <span style="color:${color};font-weight:700;font-size:1.1rem">${sign}${diff} ms</span>
+        Latest change: <span style="color:${color};font-weight:700;font-size:1.1rem">${sign}${diff} ms</span>
       </div>
     `;
   }
 
   function renderEntryDetail(entry, label) {
+    const durations = getDurations(entry);
+    const latestMs = durations.length ? durations[durations.length - 1] : null;
+    const avgMs = durations.length
+      ? (durations.reduce((a, b) => a + b, 0) / durations.length).toFixed(2)
+      : null;
+    const minMs = durations.length ? Math.min(...durations) : null;
+    const maxMs = durations.length ? Math.max(...durations) : null;
     return `
       <div style="font-size:0.82rem">
         <div style="color:#94a3b8;font-weight:600;margin-bottom:8px">${label}</div>
         <div style="color:#64748b;margin-bottom:4px">${new Date(entry.timestamp).toLocaleString()}</div>
         <div style="color:#e2e8f0;word-break:break-all;margin-bottom:6px">${escHtml(entry.url)}</div>
         <div class="result-summary" style="flex-wrap:wrap;gap:8px">
-          <div class="stat-pill" style="font-size:0.75rem">Avg <span>${entry.avg_ms} ms</span></div>
-          <div class="stat-pill" style="font-size:0.75rem">Min <span>${entry.min_ms} ms</span></div>
-          <div class="stat-pill" style="font-size:0.75rem">Max <span>${entry.max_ms} ms</span></div>
+          <div class="stat-pill" style="font-size:0.75rem">Requests <span>${durations.length}</span></div>
+          <div class="stat-pill" style="font-size:0.75rem">Latest <span>${latestMs === null ? '-' : latestMs + ' ms'}</span></div>
+          <div class="stat-pill" style="font-size:0.75rem">Avg <span>${avgMs === null ? '-' : avgMs + ' ms'}</span></div>
+          <div class="stat-pill" style="font-size:0.75rem">Min <span>${minMs === null ? '-' : minMs + ' ms'}</span></div>
+          <div class="stat-pill" style="font-size:0.75rem">Max <span>${maxMs === null ? '-' : maxMs + ' ms'}</span></div>
         </div>
       </div>
     `;
@@ -556,42 +754,30 @@
   /* ── Chart ── */
   function renderChart() {
     const ctx = document.getElementById('perfChart').getContext('2d');
-    const recent = historyData.slice(-40);
-    const labels = recent.map(e => {
-      const d = new Date(e.timestamp);
-      return d.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' +
-             d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-    });
-    const avgData = recent.map(e => e.avg_ms);
-    const minData = recent.map(e => e.min_ms);
-    const maxData = recent.map(e => e.max_ms);
+    const points = [];
+    for (const entry of historyData.slice(-40)) {
+      const ts = new Date(entry.timestamp).toLocaleTimeString([], {
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+      });
+      for (const r of (entry.results || [])) {
+        points.push({ label: `${ts} #${r.index || 1}`, y: r.elapsed_ms });
+      }
+    }
 
-    const datasets = [
-      {
-        label: 'Avg (ms)',
-        data: avgData,
-        backgroundColor: 'rgba(56,189,248,0.7)',
-        borderColor: '#38bdf8',
-        borderWidth: 1,
-        borderRadius: 4,
-      },
-      {
-        label: 'Min (ms)',
-        data: minData,
-        backgroundColor: 'rgba(52,211,153,0.5)',
-        borderColor: '#34d399',
-        borderWidth: 1,
-        borderRadius: 4,
-      },
-      {
-        label: 'Max (ms)',
-        data: maxData,
-        backgroundColor: 'rgba(167,139,250,0.5)',
-        borderColor: '#a78bfa',
-        borderWidth: 1,
-        borderRadius: 4,
-      },
-    ];
+    const trimmed = points.slice(-120);
+    const labels = trimmed.map(p => p.label);
+    const durations = trimmed.map(p => p.y);
+
+    const datasets = [{
+      label: 'Duration (ms)',
+      data: durations,
+      borderColor: '#38bdf8',
+      backgroundColor: 'rgba(56,189,248,0.25)',
+      pointBackgroundColor: '#38bdf8',
+      pointRadius: 3,
+      tension: 0.2,
+      fill: false,
+    }];
 
     if (perfChart) {
       perfChart.data.labels = labels;
@@ -601,7 +787,7 @@
     }
 
     perfChart = new Chart(ctx, {
-      type: 'bar',
+      type: 'line',
       data: { labels, datasets },
       options: {
         responsive: true,
@@ -633,10 +819,31 @@
     });
   }
 
+  function getDurations(entry) {
+    return (entry.results || [])
+      .map(r => Number(r.elapsed_ms))
+      .filter(v => Number.isFinite(v));
+  }
+
+  function getLatestDuration(entry) {
+    const durations = getDurations(entry);
+    return durations.length ? durations[durations.length - 1] : null;
+  }
+
   /* ── Clear history ── */
   async function clearHistory() {
-    if (!confirm('Clear all history?')) return;
-    await fetch('/history/clear', { method: 'POST' });
+    const urlFilter = getCurrentUrlFilter();
+    const msg = urlFilter
+      ? `Clear history for this URL?\n${urlFilter}`
+      : 'Clear all history?';
+    if (!confirm(msg)) return;
+
+    await fetch('/history/clear', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ url: urlFilter || null }),
+    });
+
     historyData = [];
     selectedEntryId = null;
     currentEntryId = null;

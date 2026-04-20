@@ -86,13 +86,27 @@ def index():
 @app.route("/history")
 def get_history():
     history = load_history()
+    url_filter = (request.args.get("url") or "").strip()
+    if url_filter:
+        history = [h for h in history if (h.get("url") or "").strip() == url_filter]
     return jsonify(history)
 
 
 @app.route("/history/clear", methods=["POST"])
 def clear_history():
-    save_history([])
-    return jsonify({"ok": True})
+    payload = request.get_json(silent=True) or {}
+    url_filter = (payload.get("url") or request.args.get("url") or "").strip()
+
+    history = load_history()
+    if not url_filter:
+        cleared = len(history)
+        save_history([])
+        return jsonify({"ok": True, "cleared": cleared, "url": None})
+
+    kept = [h for h in history if (h.get("url") or "").strip() != url_filter]
+    cleared = len(history) - len(kept)
+    save_history(kept)
+    return jsonify({"ok": True, "cleared": cleared, "url": url_filter})
 
 
 @app.route("/execute", methods=["POST"])
@@ -140,11 +154,6 @@ def execute():
         "body": body,
         "count": count,
         "results": results,
-        "avg_ms": round(
-            sum(r["elapsed_ms"] for r in results) / len(results), 2
-        ),
-        "min_ms": min(r["elapsed_ms"] for r in results),
-        "max_ms": max(r["elapsed_ms"] for r in results),
     }
     history.append(entry)
     save_history(history)
@@ -154,4 +163,4 @@ def execute():
 
 if __name__ == "__main__":
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    app.run(debug=debug, host="0.0.0.0", port=5000)
+    app.run(debug=debug, host="0.0.0.0", port=5001)
