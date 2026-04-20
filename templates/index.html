@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>API Performance Checker</title>
+  <script src="/static/chart.umd.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #38bdf8;
+      margin-bottom: 24px;
+      letter-spacing: -0.5px;
+    }
+    h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 14px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+      gap: 24px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 24px;
+    }
+    label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+      margin-top: 14px;
+    }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"], input[type="number"], select, textarea {
+      width: 100%;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      color: #e2e8f0;
+      padding: 9px 12px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      transition: border-color 0.15s;
+      outline: none;
+    }
+    input[type="text"]:focus, input[type="number"]:focus,
+    select:focus, textarea:focus {
+      border-color: #38bdf8;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 80px;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 0.82rem;
+    }
+    .method-url { display: flex; gap: 10px; }
+    .method-url select { width: 110px; flex-shrink: 0; }
+    .method-url input { flex: 1; }
+    .exec-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+    .exec-mode { display: flex; gap: 8px; flex-wrap: wrap; }
+    .exec-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .exec-group label { margin: 0; }
+    button {
+      padding: 9px 18px;
+      border-radius: 8px;
+      border: none;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    button:active { transform: scale(0.97); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-once { background: #0ea5e9; color: #fff; }
+    .btn-seq  { background: #8b5cf6; color: #fff; }
+    .btn-int  { background: #10b981; color: #fff; }
+    .btn-stop { background: #ef4444; color: #fff; display: none; }
+    .btn-clear { background: #475569; color: #fff; font-size: 0.8rem; padding: 7px 14px; }
+
+    /* Results */
+    #results-section { margin-top: 20px; }
+    .result-summary {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .stat-pill {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 0.82rem;
+      color: #94a3b8;
+    }
+    .stat-pill span { color: #38bdf8; font-weight: 700; font-size: 1rem; }
+    .result-items {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .result-item {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 0.82rem;
+    }
+    .result-item .ri-top {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .badge {
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .badge-ok  { background: #064e3b; color: #34d399; }
+    .badge-err { background: #450a0a; color: #f87171; }
+    .badge-warn{ background: #422006; color: #fb923c; }
+    .time-badge { color: #a78bfa; font-weight: 700; }
+    .result-body {
+      color: #64748b;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 0.78rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 100px;
+      overflow-y: auto;
+    }
+    .result-body.expanded { max-height: none; }
+    .toggle-body {
+      color: #38bdf8;
+      cursor: pointer;
+      font-size: 0.75rem;
+      margin-top: 4px;
+      display: inline-block;
+    }
+
+    /* History */
+    #history-section { overflow-y: auto; max-height: 320px; }
+    .history-entry {
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+      font-size: 0.82rem;
+    }
+    .history-entry:hover { border-color: #38bdf8; }
+    .history-entry.active { border-color: #38bdf8; background: #0c2340; }
+    .he-top {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .he-url { color: #e2e8f0; font-weight: 600; word-break: break-all; }
+    .he-meta { color: #64748b; font-size: 0.75rem; white-space: nowrap; }
+    .he-stats { display: flex; gap: 10px; margin-top: 4px; color: #94a3b8; font-size: 0.75rem; }
+    .he-avg { color: #a78bfa; font-weight: 700; }
+    .latency-trend-up { color: #f87171; font-weight: 700; }
+    .latency-trend-down { color: #34d399; font-weight: 700; }
+    .latency-trend-flat { color: #94a3b8; font-weight: 700; }
+
+    /* Chart */
+    #chart-section { margin-top: 24px; }
+    .chart-wrap { position: relative; height: 220px; }
+
+    /* Spinner */
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid #334155;
+      border-top-color: #38bdf8;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-msg { color: #f87171; font-size: 0.85rem; margin-top: 8px; }
+
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<h1>⚡ API Performance Checker</h1>
+<div class="layout">
+
+  <!-- LEFT: Form -->
+  <div>
+    <div class="card">
+      <h2>Request</h2>
+
+      <label>Method &amp; URL</label>
+      <div class="method-url">
+        <select id="method">
+          <option>GET</option>
+          <option>POST</option>
+          <option>PUT</option>
+          <option>PATCH</option>
+          <option>DELETE</option>
+          <option>HEAD</option>
+          <option>OPTIONS</option>
+        </select>
+        <input type="text" id="url" placeholder="https://api.example.com/endpoint" />
+      </div>
+
+      <label>Authorization Header Value</label>
+      <input type="text" id="auth_header" placeholder="Bearer token123  or  Basic dXNlcjpwYXNz" />
+
+      <label>Extra Headers (JSON object)</label>
+      <textarea id="headers" rows="3" placeholder='{"Content-Type": "application/json", "X-Custom": "value"}'></textarea>
+
+      <label>Request Body</label>
+      <textarea id="body" rows="4" placeholder='{"key": "value"}'></textarea>
+
+      <div class="exec-row">
+        <div class="exec-group">
+          <button class="btn-once" id="btn-once" onclick="runOnce()">▶ Execute Once</button>
+        </div>
+        <div class="exec-group">
+          <label>Repeat N times</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" id="seq-count" value="5" min="1" max="500" style="width:80px" />
+            <button class="btn-seq" id="btn-seq" onclick="runSequential()">⟳ Sequential</button>
+          </div>
+        </div>
+        <div class="exec-group">
+          <label>Interval (seconds)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" id="interval-secs" value="3" min="1" max="3600" style="width:80px" />
+            <button class="btn-int" id="btn-int" onclick="startInterval()">⏱ Interval</button>
+            <button class="btn-stop" id="btn-stop" onclick="stopInterval()">■ Stop</button>
+          </div>
+        </div>
+      </div>
+      <div id="error-msg" class="error-msg"></div>
+    </div>
+
+    <!-- Current Results -->
+    <div class="card" id="results-section" style="margin-top:20px;display:none">
+      <h2>Results <span id="results-spinner" class="spinner" style="display:none"></span></h2>
+      <div class="result-summary" id="result-summary"></div>
+      <div class="result-items" id="result-items"></div>
+    </div>
+
+    <!-- Chart -->
+    <div class="card" id="chart-section" style="margin-top:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h2 style="margin:0">Response Time History (ms)</h2>
+        <button class="btn-clear" onclick="clearHistory()">🗑 Clear History</button>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="perfChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: History -->
+  <div>
+    <div class="card">
+      <h2>Execution History</h2>
+      <div id="history-filter-indicator" style="color:#64748b;font-size:0.78rem;margin-bottom:10px;display:none"></div>
+      <div id="history-section">
+        <div style="color:#475569;font-size:0.85rem">No history yet.</div>
+      </div>
+    </div>
+
+    <!-- Comparison -->
+    <div class="card" id="compare-card" style="margin-top:20px;display:none">
+      <h2>Comparison</h2>
+      <div id="compare-content"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  /* ── State ── */
+  let intervalDelayTimer = null;
+  let intervalRunning = false;
+  let intervalRemaining = 0;
+  let intervalTotal = 0;
+  let intervalDurations = [];
+  let intervalSeconds = 3;
+  let activeRequestCount = 0;
+  let stopRequested = false;
+  const activeControllers = new Set();
+  let historyData = [];
+  let historyDebounceTimer = null;
+  let selectedEntryId = null;
+  let currentEntryId = null;
+  let perfChart = null;
+
+  /* ── Init ── */
+  window.addEventListener('DOMContentLoaded', () => {
+    loadLastExecution();
+    fetchHistory();
+
+    const urlInput = document.getElementById('url');
+    urlInput.addEventListener('input', () => {
+      if (historyDebounceTimer) clearTimeout(historyDebounceTimer);
+      historyDebounceTimer = setTimeout(() => {
+        selectedEntryId = null;
+        currentEntryId = null;
+        fetchHistory();
+      }, 300);
+    });
+  });
+
+  function loadLastExecution() {
+    const last = {{ last_execution | tojson }};
+    if (!last) return;
+    document.getElementById('url').value = last.url || '';
+    document.getElementById('method').value = last.method || 'GET';
+    document.getElementById('auth_header').value = last.auth_header || '';
+    document.getElementById('headers').value = last.headers || '';
+    document.getElementById('body').value = last.body || '';
+    if (last.count) document.getElementById('seq-count').value = last.count;
+  }
+
+  /* ── Collect form ── */
+  function getFormData(count) {
+    return {
+      url:         document.getElementById('url').value.trim(),
+      method:      document.getElementById('method').value,
+      auth_header: document.getElementById('auth_header').value.trim(),
+      headers:     document.getElementById('headers').value.trim(),
+      body:        document.getElementById('body').value.trim(),
+      count:       count || 1,
+    };
+  }
+
+  function getCurrentUrlFilter() {
+    return document.getElementById('url').value.trim();
+  }
+
+  /* ── Execution ── */
+  async function runOnce() {
+    await execute(getFormData(1));
+  }
+
+  async function runSequential() {
+    const n = parseInt(document.getElementById('seq-count').value) || 1;
+    await execute(getFormData(n));
+  }
+
+  async function startInterval() {
+    if (intervalRunning) return;
+    const n = parseInt(document.getElementById('seq-count').value) || 1;
+    const secs = parseFloat(document.getElementById('interval-secs').value) || 3;
+
+    if (n < 1) {
+      document.getElementById('error-msg').textContent = '⚠ Repeat count must be at least 1';
+      return;
+    }
+
+    stopRequested = false;
+    intervalRunning = true;
+    intervalRemaining = n;
+    intervalTotal = n;
+    intervalDurations = [];
+    intervalSeconds = secs;
+    document.getElementById('btn-int').style.display = 'none';
+    document.getElementById('btn-stop').style.display = '';
+    syncControls();
+
+    while (intervalRunning && intervalRemaining > 0) {
+      await execute(getFormData(1), { suppressStopMessage: true });
+      intervalRemaining -= 1;
+      if (!intervalRunning || intervalRemaining <= 0) break;
+      await waitForNextTick(intervalSeconds * 1000);
+    }
+
+    if (!stopRequested) {
+      stopInterval(false);
+    }
+  }
+
+  function stopInterval(showMessage = true) {
+    stopRequested = true;
+    if (intervalDelayTimer) {
+      clearTimeout(intervalDelayTimer);
+      intervalDelayTimer = null;
+    }
+    intervalRunning = false;
+    intervalRemaining = 0;
+    intervalTotal = 0;
+
+    // Hard stop all in-flight API calls.
+    for (const controller of activeControllers) {
+      controller.abort();
+    }
+    activeControllers.clear();
+
+    document.getElementById('btn-int').style.display = '';
+    document.getElementById('btn-stop').style.display = 'none';
+    if (showMessage) {
+      document.getElementById('error-msg').textContent = 'Execution stopped.';
+    }
+    syncControls();
+  }
+
+  function waitForNextTick(ms) {
+    return new Promise(resolve => {
+      intervalDelayTimer = setTimeout(() => {
+        intervalDelayTimer = null;
+        resolve();
+      }, ms);
+    });
+  }
+
+  function syncControls() {
+    document.getElementById('results-spinner').style.display = activeRequestCount > 0 ? '' : 'none';
+    const disabled = activeRequestCount > 0 || intervalRunning;
+    ['btn-once','btn-seq','btn-int'].forEach(id => {
+      document.getElementById(id).disabled = disabled;
+    });
+
+    const btnInt = document.getElementById('btn-int');
+    const btnStop = document.getElementById('btn-stop');
+    btnInt.style.display = intervalRunning ? 'none' : '';
+    btnStop.style.display = (intervalRunning || activeRequestCount > 0) ? '' : 'none';
+  }
+
+  async function execute(payload, options = {}) {
+    document.getElementById('error-msg').textContent = '';
+    document.getElementById('results-section').style.display = '';
+    const controller = new AbortController();
+    activeControllers.add(controller);
+    activeRequestCount += 1;
+    syncControls();
+
+    try {
+      const resp = await fetch('/execute', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        signal: controller.signal,
+        body: JSON.stringify(payload),
+      });
+      const entry = await resp.json();
+      if (!resp.ok) { throw new Error(entry.error || 'Request failed'); }
+
+      if (intervalRunning) {
+        const d = getLatestDuration(entry);
+        if (d !== null) intervalDurations.push(d);
+      }
+
+      currentEntryId = entry.id;
+      renderResults(entry);
+      await fetchHistory();
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        if (!options.suppressStopMessage) {
+          document.getElementById('error-msg').textContent = 'Execution stopped.';
+        }
+        return;
+      }
+      document.getElementById('error-msg').textContent = '⚠ ' + e.message;
+    } finally {
+      activeControllers.delete(controller);
+      activeRequestCount = Math.max(0, activeRequestCount - 1);
+      syncControls();
+    }
+  }
+
+  /* ── Render current results ── */
+  function renderResults(entry) {
+    const summary = document.getElementById('result-summary');
+    const items   = document.getElementById('result-items');
+    const durations = intervalRunning ? intervalDurations : getDurations(entry);
+    const latestMs = durations.length ? durations[durations.length - 1] : null;
+    const intervalCompleted = intervalTotal > 0
+      ? Math.max(0, intervalTotal - intervalRemaining + 1)
+      : 0;
+    const callsLabel = intervalRunning && intervalTotal > 0
+      ? `${intervalCompleted}/${intervalTotal}`
+      : `${entry.count}`;
+
+    const shouldShowStats = intervalRunning || (entry.count || 0) > 1;
+    const avgMs = durations.length
+      ? (durations.reduce((a, b) => a + b, 0) / durations.length).toFixed(2)
+      : null;
+    const minMs = durations.length ? Math.min(...durations) : null;
+    const maxMs = durations.length ? Math.max(...durations) : null;
+
+    const statsHtml = shouldShowStats
+      ? `
+      <div class="stat-pill">Avg <span>${avgMs === null ? '-' : avgMs + ' ms'}</span></div>
+      <div class="stat-pill">Min <span>${minMs === null ? '-' : minMs + ' ms'}</span></div>
+      <div class="stat-pill">Max <span>${maxMs === null ? '-' : maxMs + ' ms'}</span></div>
+    `
+      : '';
+
+    summary.innerHTML = `
+      <div class="stat-pill">Calls <span>${callsLabel}</span></div>
+      <div class="stat-pill">Latest <span>${latestMs === null ? '-' : latestMs + ' ms'}</span></div>
+      ${statsHtml}
+    `;
+
+    items.innerHTML = '';
+    for (const r of entry.results) {
+      const sc = r.status_code;
+      let badgeCls = sc >= 200 && sc < 300 ? 'badge-ok' : sc >= 400 ? 'badge-err' : 'badge-warn';
+      if (r.error) badgeCls = 'badge-err';
+      const scText = r.error ? 'ERR' : sc;
+      const bodyStr = r.error
+        ? r.error
+        : (typeof r.response_body === 'string'
+            ? r.response_body
+            : JSON.stringify(r.response_body, null, 2));
+
+      const div = document.createElement('div');
+      div.className = 'result-item';
+      div.innerHTML = `
+        <div class="ri-top">
+          <span class="badge ${badgeCls}">${scText}</span>
+          <span class="time-badge">${r.elapsed_ms} ms</span>
+          <span style="color:#64748b;font-size:0.75rem">#${r.index}</span>
+        </div>
+        <div class="result-body" id="rb-${entry.id}-${r.index}">${escHtml(bodyStr.slice(0,400))}${bodyStr.length>400?'…':''}</div>
+        ${bodyStr.length > 100 ? `<span class="toggle-body" onclick="toggleBody('rb-${entry.id}-${r.index}', this)">Show more</span>` : ''}
+      `;
+      items.appendChild(div);
+    }
+  }
+
+  function toggleBody(id, el) {
+    const el2 = document.getElementById(id);
+    el2.classList.toggle('expanded');
+    el.textContent = el2.classList.contains('expanded') ? 'Show less' : 'Show more';
+  }
+
+  /* ── History ── */
+  async function fetchHistory() {
+    const urlFilter = getCurrentUrlFilter();
+    const qs = urlFilter ? `?url=${encodeURIComponent(urlFilter)}` : '';
+    const resp = await fetch('/history' + qs);
+    historyData = await resp.json();
+
+    if (selectedEntryId && !historyData.some(e => e.id === selectedEntryId)) {
+      selectedEntryId = null;
+    }
+    if (currentEntryId && !historyData.some(e => e.id === currentEntryId)) {
+      currentEntryId = null;
+    }
+
+    renderHistory();
+    renderChart();
+    if (selectedEntryId) renderComparison();
+  }
+
+  function renderHistory() {
+    const el = document.getElementById('history-section');
+    const indicator = document.getElementById('history-filter-indicator');
+    const urlFilter = getCurrentUrlFilter();
+    if (urlFilter) {
+      indicator.style.display = '';
+      indicator.textContent = `Filtered by URL: ${urlFilter}`;
+    } else {
+      indicator.style.display = 'none';
+      indicator.textContent = '';
+    }
+
+    if (!historyData.length) {
+      el.innerHTML = urlFilter
+        ? '<div style="color:#475569;font-size:0.85rem">No history for this URL yet.</div>'
+        : '<div style="color:#475569;font-size:0.85rem">No history yet.</div>';
+      return;
+    }
+
+    const trendByEntryId = {};
+    for (let i = 0; i < historyData.length; i += 1) {
+      const cur = historyData[i];
+      const curLatest = getLatestDuration(cur);
+      if (i === 0 || curLatest === null) {
+        trendByEntryId[cur.id] = null;
+        continue;
+      }
+
+      const prev = historyData[i - 1];
+      const prevLatest = getLatestDuration(prev);
+      if (prevLatest === null) {
+        trendByEntryId[cur.id] = null;
+      } else if (curLatest > prevLatest) {
+        trendByEntryId[cur.id] = 'up';
+      } else if (curLatest < prevLatest) {
+        trendByEntryId[cur.id] = 'down';
+      } else {
+        trendByEntryId[cur.id] = 'flat';
+      }
+    }
+
+    el.innerHTML = '';
+    [...historyData].reverse().forEach(entry => {
+      const div = document.createElement('div');
+      div.className = 'history-entry' + (entry.id === selectedEntryId ? ' active' : '');
+      div.dataset.id = entry.id;
+      const ts = new Date(entry.timestamp).toLocaleString();
+      const durations = getDurations(entry);
+      const latestMs = durations.length ? durations[durations.length - 1] : null;
+      const trend = trendByEntryId[entry.id];
+      const trendHtml = trend === 'up'
+        ? '<span class="latency-trend-up">↑ slower</span>'
+        : trend === 'down'
+          ? '<span class="latency-trend-down">↓ faster</span>'
+          : trend === 'flat'
+            ? '<span class="latency-trend-flat">→ same</span>'
+            : '';
+      div.innerHTML = `
+        <div class="he-top">
+          <span class="he-url">${escHtml(entry.url)}</span>
+          <span class="he-meta">${entry.method}</span>
+        </div>
+        <div class="he-stats">
+          <span>${ts}</span>
+          <span>n=${durations.length || entry.count || 0}</span>
+          <span class="he-avg">latest ${latestMs === null ? '-' : latestMs + ' ms'}</span>
+          ${trendHtml}
+        </div>
+      `;
+      div.addEventListener('click', () => selectEntry(entry.id));
+      el.appendChild(div);
+    });
+  }
+
+  function selectEntry(id) {
+    selectedEntryId = (selectedEntryId === id) ? null : id;
+    renderHistory();
+    renderComparison();
+    // Also load form settings from selected entry
+    if (selectedEntryId) {
+      const entry = historyData.find(e => e.id === id);
+      if (entry) {
+        document.getElementById('url').value = entry.url;
+        document.getElementById('method').value = entry.method;
+        document.getElementById('auth_header').value = entry.auth_header || '';
+        document.getElementById('headers').value = entry.headers || '';
+        document.getElementById('body').value = entry.body || '';
+        document.getElementById('seq-count').value = entry.count;
+      }
+    }
+  }
+
+  function renderComparison() {
+    const card = document.getElementById('compare-card');
+    const content = document.getElementById('compare-content');
+    if (!selectedEntryId) { card.style.display = 'none'; return; }
+
+    const sel = historyData.find(e => e.id === selectedEntryId);
+    const cur = historyData.find(e => e.id === currentEntryId);
+    card.style.display = '';
+
+    if (!cur || cur.id === sel.id) {
+      content.innerHTML = renderEntryDetail(sel, 'Selected');
+      return;
+    }
+
+    const selLatest = getLatestDuration(sel);
+    const curLatest = getLatestDuration(cur);
+    if (selLatest === null || curLatest === null) {
+      content.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          ${renderEntryDetail(sel, 'Selected (baseline)')}
+          ${renderEntryDetail(cur, 'Current')}
+        </div>
+        <div style="margin-top:14px;padding:12px;background:#0f172a;border-radius:8px;text-align:center;color:#94a3b8">
+          Latest change: not available
+        </div>
+      `;
+      return;
+    }
+    const diff = (curLatest - selLatest).toFixed(2);
+    const sign = diff > 0 ? '+' : '';
+    const color = diff > 0 ? '#f87171' : '#34d399';
+    content.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        ${renderEntryDetail(sel, 'Selected (baseline)')}
+        ${renderEntryDetail(cur, 'Current')}
+      </div>
+      <div style="margin-top:14px;padding:12px;background:#0f172a;border-radius:8px;text-align:center">
+        Latest change: <span style="color:${color};font-weight:700;font-size:1.1rem">${sign}${diff} ms</span>
+      </div>
+    `;
+  }
+
+  function renderEntryDetail(entry, label) {
+    const durations = getDurations(entry);
+    const latestMs = durations.length ? durations[durations.length - 1] : null;
+    const avgMs = durations.length
+      ? (durations.reduce((a, b) => a + b, 0) / durations.length).toFixed(2)
+      : null;
+    const minMs = durations.length ? Math.min(...durations) : null;
+    const maxMs = durations.length ? Math.max(...durations) : null;
+    return `
+      <div style="font-size:0.82rem">
+        <div style="color:#94a3b8;font-weight:600;margin-bottom:8px">${label}</div>
+        <div style="color:#64748b;margin-bottom:4px">${new Date(entry.timestamp).toLocaleString()}</div>
+        <div style="color:#e2e8f0;word-break:break-all;margin-bottom:6px">${escHtml(entry.url)}</div>
+        <div class="result-summary" style="flex-wrap:wrap;gap:8px">
+          <div class="stat-pill" style="font-size:0.75rem">Requests <span>${durations.length}</span></div>
+          <div class="stat-pill" style="font-size:0.75rem">Latest <span>${latestMs === null ? '-' : latestMs + ' ms'}</span></div>
+          <div class="stat-pill" style="font-size:0.75rem">Avg <span>${avgMs === null ? '-' : avgMs + ' ms'}</span></div>
+          <div class="stat-pill" style="font-size:0.75rem">Min <span>${minMs === null ? '-' : minMs + ' ms'}</span></div>
+          <div class="stat-pill" style="font-size:0.75rem">Max <span>${maxMs === null ? '-' : maxMs + ' ms'}</span></div>
+        </div>
+      </div>
+    `;
+  }
+
+  /* ── Chart ── */
+  function renderChart() {
+    const ctx = document.getElementById('perfChart').getContext('2d');
+    const points = [];
+    for (const entry of historyData.slice(-40)) {
+      const ts = new Date(entry.timestamp).toLocaleTimeString([], {
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+      });
+      for (const r of (entry.results || [])) {
+        points.push({ label: `${ts} #${r.index || 1}`, y: r.elapsed_ms });
+      }
+    }
+
+    const trimmed = points.slice(-120);
+    const labels = trimmed.map(p => p.label);
+    const durations = trimmed.map(p => p.y);
+
+    const datasets = [{
+      label: 'Duration (ms)',
+      data: durations,
+      borderColor: '#38bdf8',
+      backgroundColor: 'rgba(56,189,248,0.25)',
+      pointBackgroundColor: '#38bdf8',
+      pointRadius: 3,
+      tension: 0.2,
+      fill: false,
+    }];
+
+    if (perfChart) {
+      perfChart.data.labels = labels;
+      perfChart.data.datasets = datasets;
+      perfChart.update('active');
+      return;
+    }
+
+    perfChart = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
+          tooltip: {
+            backgroundColor: '#1e293b',
+            titleColor: '#e2e8f0',
+            bodyColor: '#94a3b8',
+            borderColor: '#334155',
+            borderWidth: 1,
+          },
+        },
+        scales: {
+          x: {
+            ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 45 },
+            grid: { color: '#1e293b' },
+          },
+          y: {
+            beginAtZero: true,
+            ticks: { color: '#64748b', font: { size: 11 } },
+            grid: { color: '#334155' },
+            title: { display: true, text: 'ms', color: '#64748b' },
+          },
+        },
+      },
+    });
+  }
+
+  function getDurations(entry) {
+    return (entry.results || [])
+      .map(r => Number(r.elapsed_ms))
+      .filter(v => Number.isFinite(v));
+  }
+
+  function getLatestDuration(entry) {
+    const durations = getDurations(entry);
+    return durations.length ? durations[durations.length - 1] : null;
+  }
+
+  /* ── Clear history ── */
+  async function clearHistory() {
+    const urlFilter = getCurrentUrlFilter();
+    const msg = urlFilter
+      ? `Clear history for this URL?\n${urlFilter}`
+      : 'Clear all history?';
+    if (!confirm(msg)) return;
+
+    await fetch('/history/clear', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ url: urlFilter || null }),
+    });
+
+    historyData = [];
+    selectedEntryId = null;
+    currentEntryId = null;
+    renderHistory();
+    renderChart();
+    document.getElementById('compare-card').style.display = 'none';
+  }
+
+  /* ── Utilities ── */
+  function escHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+</script>
+</body>
+</html>
