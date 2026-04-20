@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>API Performance Checker</title>
+  <script src="/static/chart.umd.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #38bdf8;
+      margin-bottom: 24px;
+      letter-spacing: -0.5px;
+    }
+    h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 14px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+      gap: 24px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 24px;
+    }
+    label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+      margin-top: 14px;
+    }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"], input[type="number"], select, textarea {
+      width: 100%;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      color: #e2e8f0;
+      padding: 9px 12px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      transition: border-color 0.15s;
+      outline: none;
+    }
+    input[type="text"]:focus, input[type="number"]:focus,
+    select:focus, textarea:focus {
+      border-color: #38bdf8;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 80px;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 0.82rem;
+    }
+    .method-url { display: flex; gap: 10px; }
+    .method-url select { width: 110px; flex-shrink: 0; }
+    .method-url input { flex: 1; }
+    .exec-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+    .exec-mode { display: flex; gap: 8px; flex-wrap: wrap; }
+    .exec-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .exec-group label { margin: 0; }
+    button {
+      padding: 9px 18px;
+      border-radius: 8px;
+      border: none;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    button:active { transform: scale(0.97); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-once { background: #0ea5e9; color: #fff; }
+    .btn-seq  { background: #8b5cf6; color: #fff; }
+    .btn-int  { background: #10b981; color: #fff; }
+    .btn-stop { background: #ef4444; color: #fff; display: none; }
+    .btn-clear { background: #475569; color: #fff; font-size: 0.8rem; padding: 7px 14px; }
+
+    /* Results */
+    #results-section { margin-top: 20px; }
+    .result-summary {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .stat-pill {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 0.82rem;
+      color: #94a3b8;
+    }
+    .stat-pill span { color: #38bdf8; font-weight: 700; font-size: 1rem; }
+    .result-items {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .result-item {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 0.82rem;
+    }
+    .result-item .ri-top {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .badge {
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .badge-ok  { background: #064e3b; color: #34d399; }
+    .badge-err { background: #450a0a; color: #f87171; }
+    .badge-warn{ background: #422006; color: #fb923c; }
+    .time-badge { color: #a78bfa; font-weight: 700; }
+    .result-body {
+      color: #64748b;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 0.78rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 100px;
+      overflow-y: auto;
+    }
+    .result-body.expanded { max-height: none; }
+    .toggle-body {
+      color: #38bdf8;
+      cursor: pointer;
+      font-size: 0.75rem;
+      margin-top: 4px;
+      display: inline-block;
+    }
+
+    /* History */
+    #history-section { overflow-y: auto; max-height: 320px; }
+    .history-entry {
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+      font-size: 0.82rem;
+    }
+    .history-entry:hover { border-color: #38bdf8; }
+    .history-entry.active { border-color: #38bdf8; background: #0c2340; }
+    .he-top {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .he-url { color: #e2e8f0; font-weight: 600; word-break: break-all; }
+    .he-meta { color: #64748b; font-size: 0.75rem; white-space: nowrap; }
+    .he-stats { display: flex; gap: 10px; margin-top: 4px; color: #94a3b8; font-size: 0.75rem; }
+    .he-avg { color: #a78bfa; font-weight: 700; }
+
+    /* Chart */
+    #chart-section { margin-top: 24px; }
+    .chart-wrap { position: relative; height: 220px; }
+
+    /* Spinner */
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid #334155;
+      border-top-color: #38bdf8;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-msg { color: #f87171; font-size: 0.85rem; margin-top: 8px; }
+
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<h1>⚡ API Performance Checker</h1>
+<div class="layout">
+
+  <!-- LEFT: Form -->
+  <div>
+    <div class="card">
+      <h2>Request</h2>
+
+      <label>Method &amp; URL</label>
+      <div class="method-url">
+        <select id="method">
+          <option>GET</option>
+          <option>POST</option>
+          <option>PUT</option>
+          <option>PATCH</option>
+          <option>DELETE</option>
+          <option>HEAD</option>
+          <option>OPTIONS</option>
+        </select>
+        <input type="text" id="url" placeholder="https://api.example.com/endpoint" />
+      </div>
+
+      <label>Authorization Header Value</label>
+      <input type="text" id="auth_header" placeholder="Bearer token123  or  Basic dXNlcjpwYXNz" />
+
+      <label>Extra Headers (JSON object)</label>
+      <textarea id="headers" rows="3" placeholder='{"Content-Type": "application/json", "X-Custom": "value"}'></textarea>
+
+      <label>Request Body</label>
+      <textarea id="body" rows="4" placeholder='{"key": "value"}'></textarea>
+
+      <div class="exec-row">
+        <div class="exec-group">
+          <button class="btn-once" id="btn-once" onclick="runOnce()">▶ Execute Once</button>
+        </div>
+        <div class="exec-group">
+          <label>Repeat N times</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" id="seq-count" value="5" min="1" max="500" style="width:80px" />
+            <button class="btn-seq" id="btn-seq" onclick="runSequential()">⟳ Sequential</button>
+          </div>
+        </div>
+        <div class="exec-group">
+          <label>Interval (seconds)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" id="interval-secs" value="3" min="1" max="3600" style="width:80px" />
+            <button class="btn-int" id="btn-int" onclick="startInterval()">⏱ Interval</button>
+            <button class="btn-stop" id="btn-stop" onclick="stopInterval()">■ Stop</button>
+          </div>
+        </div>
+      </div>
+      <div id="error-msg" class="error-msg"></div>
+    </div>
+
+    <!-- Current Results -->
+    <div class="card" id="results-section" style="margin-top:20px;display:none">
+      <h2>Results <span id="results-spinner" class="spinner" style="display:none"></span></h2>
+      <div class="result-summary" id="result-summary"></div>
+      <div class="result-items" id="result-items"></div>
+    </div>
+
+    <!-- Chart -->
+    <div class="card" id="chart-section" style="margin-top:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h2 style="margin:0">Response Time History (ms)</h2>
+        <button class="btn-clear" onclick="clearHistory()">🗑 Clear History</button>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="perfChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: History -->
+  <div>
+    <div class="card">
+      <h2>Execution History</h2>
+      <div id="history-section">
+        <div style="color:#475569;font-size:0.85rem">No history yet.</div>
+      </div>
+    </div>
+
+    <!-- Comparison -->
+    <div class="card" id="compare-card" style="margin-top:20px;display:none">
+      <h2>Comparison</h2>
+      <div id="compare-content"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  /* ── State ── */
+  let intervalTimer = null;
+  let intervalRunning = false;
+  let historyData = [];
+  let selectedEntryId = null;
+  let currentEntryId = null;
+  let perfChart = null;
+
+  /* ── Init ── */
+  window.addEventListener('DOMContentLoaded', () => {
+    loadLastExecution();
+    fetchHistory();
+  });
+
+  function loadLastExecution() {
+    const last = {{ last_execution | tojson }};
+    if (!last) return;
+    document.getElementById('url').value = last.url || '';
+    document.getElementById('method').value = last.method || 'GET';
+    document.getElementById('auth_header').value = last.auth_header || '';
+    document.getElementById('headers').value = last.headers || '';
+    document.getElementById('body').value = last.body || '';
+    if (last.count) document.getElementById('seq-count').value = last.count;
+  }
+
+  /* ── Collect form ── */
+  function getFormData(count) {
+    return {
+      url:         document.getElementById('url').value.trim(),
+      method:      document.getElementById('method').value,
+      auth_header: document.getElementById('auth_header').value.trim(),
+      headers:     document.getElementById('headers').value.trim(),
+      body:        document.getElementById('body').value.trim(),
+      count:       count || 1,
+    };
+  }
+
+  /* ── Execution ── */
+  async function runOnce() {
+    await execute(getFormData(1));
+  }
+
+  async function runSequential() {
+    const n = parseInt(document.getElementById('seq-count').value) || 1;
+    await execute(getFormData(n));
+  }
+
+  function startInterval() {
+    if (intervalRunning) return;
+    const secs = parseFloat(document.getElementById('interval-secs').value) || 3;
+    intervalRunning = true;
+    document.getElementById('btn-int').style.display = 'none';
+    document.getElementById('btn-stop').style.display = '';
+    execute(getFormData(1));
+    intervalTimer = setInterval(() => execute(getFormData(1)), secs * 1000);
+  }
+
+  function stopInterval() {
+    clearInterval(intervalTimer);
+    intervalRunning = false;
+    document.getElementById('btn-int').style.display = '';
+    document.getElementById('btn-stop').style.display = 'none';
+  }
+
+  function setLoading(on) {
+    document.getElementById('results-spinner').style.display = on ? '' : 'none';
+    ['btn-once','btn-seq','btn-int'].forEach(id => {
+      document.getElementById(id).disabled = on && !intervalRunning;
+    });
+  }
+
+  async function execute(payload) {
+    document.getElementById('error-msg').textContent = '';
+    document.getElementById('results-section').style.display = '';
+    setLoading(true);
+    try {
+      const resp = await fetch('/execute', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      const entry = await resp.json();
+      if (!resp.ok) { throw new Error(entry.error || 'Request failed'); }
+      currentEntryId = entry.id;
+      renderResults(entry);
+      await fetchHistory();
+    } catch (e) {
+      document.getElementById('error-msg').textContent = '⚠ ' + e.message;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /* ── Render current results ── */
+  function renderResults(entry) {
+    const summary = document.getElementById('result-summary');
+    const items   = document.getElementById('result-items');
+
+    summary.innerHTML = `
+      <div class="stat-pill">Calls <span>${entry.count}</span></div>
+      <div class="stat-pill">Avg <span>${entry.avg_ms} ms</span></div>
+      <div class="stat-pill">Min <span>${entry.min_ms} ms</span></div>
+      <div class="stat-pill">Max <span>${entry.max_ms} ms</span></div>
+    `;
+
+    items.innerHTML = '';
+    for (const r of entry.results) {
+      const sc = r.status_code;
+      let badgeCls = sc >= 200 && sc < 300 ? 'badge-ok' : sc >= 400 ? 'badge-err' : 'badge-warn';
+      if (r.error) badgeCls = 'badge-err';
+      const scText = r.error ? 'ERR' : sc;
+      const bodyStr = r.error
+        ? r.error
+        : (typeof r.response_body === 'string'
+            ? r.response_body
+            : JSON.stringify(r.response_body, null, 2));
+
+      const div = document.createElement('div');
+      div.className = 'result-item';
+      div.innerHTML = `
+        <div class="ri-top">
+          <span class="badge ${badgeCls}">${scText}</span>
+          <span class="time-badge">${r.elapsed_ms} ms</span>
+          <span style="color:#64748b;font-size:0.75rem">#${r.index}</span>
+        </div>
+        <div class="result-body" id="rb-${entry.id}-${r.index}">${escHtml(bodyStr.slice(0,400))}${bodyStr.length>400?'…':''}</div>
+        ${bodyStr.length > 100 ? `<span class="toggle-body" onclick="toggleBody('rb-${entry.id}-${r.index}', this)">Show more</span>` : ''}
+      `;
+      items.appendChild(div);
+    }
+  }
+
+  function toggleBody(id, el) {
+    const el2 = document.getElementById(id);
+    el2.classList.toggle('expanded');
+    el.textContent = el2.classList.contains('expanded') ? 'Show less' : 'Show more';
+  }
+
+  /* ── History ── */
+  async function fetchHistory() {
+    const resp = await fetch('/history');
+    historyData = await resp.json();
+    renderHistory();
+    renderChart();
+    if (selectedEntryId) renderComparison();
+  }
+
+  function renderHistory() {
+    const el = document.getElementById('history-section');
+    if (!historyData.length) {
+      el.innerHTML = '<div style="color:#475569;font-size:0.85rem">No history yet.</div>';
+      return;
+    }
+    el.innerHTML = '';
+    [...historyData].reverse().forEach(entry => {
+      const div = document.createElement('div');
+      div.className = 'history-entry' + (entry.id === selectedEntryId ? ' active' : '');
+      div.dataset.id = entry.id;
+      const ts = new Date(entry.timestamp).toLocaleString();
+      div.innerHTML = `
+        <div class="he-top">
+          <span class="he-url">${escHtml(entry.url)}</span>
+          <span class="he-meta">${entry.method}</span>
+        </div>
+        <div class="he-stats">
+          <span>${ts}</span>
+          <span>n=${entry.count}</span>
+          <span class="he-avg">avg ${entry.avg_ms} ms</span>
+          <span>min ${entry.min_ms} ms</span>
+          <span>max ${entry.max_ms} ms</span>
+        </div>
+      `;
+      div.addEventListener('click', () => selectEntry(entry.id));
+      el.appendChild(div);
+    });
+  }
+
+  function selectEntry(id) {
+    selectedEntryId = (selectedEntryId === id) ? null : id;
+    renderHistory();
+    renderComparison();
+    // Also load form settings from selected entry
+    if (selectedEntryId) {
+      const entry = historyData.find(e => e.id === id);
+      if (entry) {
+        document.getElementById('url').value = entry.url;
+        document.getElementById('method').value = entry.method;
+        document.getElementById('auth_header').value = entry.auth_header || '';
+        document.getElementById('headers').value = entry.headers || '';
+        document.getElementById('body').value = entry.body || '';
+        document.getElementById('seq-count').value = entry.count;
+      }
+    }
+  }
+
+  function renderComparison() {
+    const card = document.getElementById('compare-card');
+    const content = document.getElementById('compare-content');
+    if (!selectedEntryId) { card.style.display = 'none'; return; }
+
+    const sel = historyData.find(e => e.id === selectedEntryId);
+    const cur = historyData.find(e => e.id === currentEntryId);
+    card.style.display = '';
+
+    if (!cur || cur.id === sel.id) {
+      content.innerHTML = renderEntryDetail(sel, 'Selected');
+      return;
+    }
+
+    const diff = (cur.avg_ms - sel.avg_ms).toFixed(2);
+    const sign = diff > 0 ? '+' : '';
+    const color = diff > 0 ? '#f87171' : '#34d399';
+    content.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        ${renderEntryDetail(sel, 'Selected (baseline)')}
+        ${renderEntryDetail(cur, 'Current')}
+      </div>
+      <div style="margin-top:14px;padding:12px;background:#0f172a;border-radius:8px;text-align:center">
+        Avg change: <span style="color:${color};font-weight:700;font-size:1.1rem">${sign}${diff} ms</span>
+      </div>
+    `;
+  }
+
+  function renderEntryDetail(entry, label) {
+    return `
+      <div style="font-size:0.82rem">
+        <div style="color:#94a3b8;font-weight:600;margin-bottom:8px">${label}</div>
+        <div style="color:#64748b;margin-bottom:4px">${new Date(entry.timestamp).toLocaleString()}</div>
+        <div style="color:#e2e8f0;word-break:break-all;margin-bottom:6px">${escHtml(entry.url)}</div>
+        <div class="result-summary" style="flex-wrap:wrap;gap:8px">
+          <div class="stat-pill" style="font-size:0.75rem">Avg <span>${entry.avg_ms} ms</span></div>
+          <div class="stat-pill" style="font-size:0.75rem">Min <span>${entry.min_ms} ms</span></div>
+          <div class="stat-pill" style="font-size:0.75rem">Max <span>${entry.max_ms} ms</span></div>
+        </div>
+      </div>
+    `;
+  }
+
+  /* ── Chart ── */
+  function renderChart() {
+    const ctx = document.getElementById('perfChart').getContext('2d');
+    const recent = historyData.slice(-40);
+    const labels = recent.map(e => {
+      const d = new Date(e.timestamp);
+      return d.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' +
+             d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    });
+    const avgData = recent.map(e => e.avg_ms);
+    const minData = recent.map(e => e.min_ms);
+    const maxData = recent.map(e => e.max_ms);
+
+    const datasets = [
+      {
+        label: 'Avg (ms)',
+        data: avgData,
+        backgroundColor: 'rgba(56,189,248,0.7)',
+        borderColor: '#38bdf8',
+        borderWidth: 1,
+        borderRadius: 4,
+      },
+      {
+        label: 'Min (ms)',
+        data: minData,
+        backgroundColor: 'rgba(52,211,153,0.5)',
+        borderColor: '#34d399',
+        borderWidth: 1,
+        borderRadius: 4,
+      },
+      {
+        label: 'Max (ms)',
+        data: maxData,
+        backgroundColor: 'rgba(167,139,250,0.5)',
+        borderColor: '#a78bfa',
+        borderWidth: 1,
+        borderRadius: 4,
+      },
+    ];
+
+    if (perfChart) {
+      perfChart.data.labels = labels;
+      perfChart.data.datasets = datasets;
+      perfChart.update('active');
+      return;
+    }
+
+    perfChart = new Chart(ctx, {
+      type: 'bar',
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
+          tooltip: {
+            backgroundColor: '#1e293b',
+            titleColor: '#e2e8f0',
+            bodyColor: '#94a3b8',
+            borderColor: '#334155',
+            borderWidth: 1,
+          },
+        },
+        scales: {
+          x: {
+            ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 45 },
+            grid: { color: '#1e293b' },
+          },
+          y: {
+            beginAtZero: true,
+            ticks: { color: '#64748b', font: { size: 11 } },
+            grid: { color: '#334155' },
+            title: { display: true, text: 'ms', color: '#64748b' },
+          },
+        },
+      },
+    });
+  }
+
+  /* ── Clear history ── */
+  async function clearHistory() {
+    if (!confirm('Clear all history?')) return;
+    await fetch('/history/clear', { method: 'POST' });
+    historyData = [];
+    selectedEntryId = null;
+    currentEntryId = null;
+    renderHistory();
+    renderChart();
+    document.getElementById('compare-card').style.display = 'none';
+  }
+
+  /* ── Utilities ── */
+  function escHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+</script>
+</body>
+</html>
